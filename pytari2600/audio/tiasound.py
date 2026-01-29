@@ -1,11 +1,22 @@
-import ctypes
-import struct
+from dataclasses import dataclass
+
+
+@dataclass
+class TIAChannelState:
+    audio_ctrl: int = 0
+    audio_freq: int = 0
+    audio_vol: int = 0
+    poly4_state: int = 0xF
+    poly5_state: int = 0x1F
+    freq_phase: int = 0
+
 
 class TIA_Sound(object):
     def __init__(self, clocks):
         print("TiaSound chip created")
 
         # CPU Clock rate, used to scale to real time.
+        # This tracks the TIA color clock, which is 3x the CPU clock.
         self.CPU_CLOCK_RATE = 3580000
 
         self.SAMPLERATE = 32050
@@ -13,35 +24,43 @@ class TIA_Sound(object):
         self.FREQ_DATA_MASK = 0x1F
         self.BITS = 8
 
-        # Stella addresses: 
+        # Stella addresses:
         # Ctrl0: 0x15, Ctrl1: 0x16, Freq0: 0x17, Freq1: 0x18, Vol0: 0x19, Vol1: 0x1A
 
         self.clocks = clocks
-
-        self.volume     = [0] * 2
-        self.freq       = [0] * 2
-        self.poly4State = [0] * 2
-        self.poly5State = [0] * 2
-        self.waveForm   = [0] * 2
-
-        self._freq_pos  = [0] * 2
+        self._channels = [TIAChannelState(), TIAChannelState()]
+        self._sample_remainder = 0
 
 
     def get_save_state(self):
-        state = {}
-        state['volume']     = self.volume
-        state['freq']       = self.freq
-        state['poly4State'] = self.poly4State
-        state['poly5State'] = self.poly5State
-        state['waveForm']   = self.waveForm
-        return state
+        return {
+            'channels': [
+                {
+                    'audio_ctrl': channel.audio_ctrl,
+                    'audio_freq': channel.audio_freq,
+                    'audio_vol': channel.audio_vol,
+                    'poly4_state': channel.poly4_state,
+                    'poly5_state': channel.poly5_state,
+                    'freq_phase': channel.freq_phase,
+                }
+                for channel in self._channels
+            ],
+            'sample_remainder': self._sample_remainder,
+        }
 
     def set_save_state(self, state):
-        self.volume     = state['volume']
-        self.freq       = state['freq']
-        self.poly4State = state['poly4State']
-        self.poly5State = state['poly5State']
-        self.waveForm   = state['waveForm']
+        channels = state.get('channels', [])
+        for idx, channel_state in enumerate(channels):
+            if idx >= len(self._channels):
+                break
+            channel = self._channels[idx]
+            channel.audio_ctrl = channel_state.get('audio_ctrl', channel.audio_ctrl)
+            channel.audio_freq = channel_state.get('audio_freq', channel.audio_freq)
+            channel.audio_vol = channel_state.get('audio_vol', channel.audio_vol)
+            channel.poly4_state = channel_state.get('poly4_state', channel.poly4_state)
+            channel.poly5_state = channel_state.get('poly5_state', channel.poly5_state)
+            channel.freq_phase = channel_state.get('freq_phase', channel.freq_phase)
+        self._sample_remainder = state.get('sample_remainder', self._sample_remainder)
 
     # Clock poly 4, return new poly4 state
     @staticmethod
@@ -78,24 +97,36 @@ class TIA_Sound(object):
 
 
     def get_channel_data(self, channel, length):
-        # Stereo callback encodes left and right by using even/odd entries in the
-        # stream.
+        """Generate audio samples for a given channel.
+
+        This follows the Stella-style state machine using polynomial counters
+        (poly4/poly5) and the TIA audio control registers.
+        """
         length = int(length)
         stream = [0] * length
+        channel_state = self._channels[channel]
+
         for i in range(length):
-    
-            if 0 == (self._freq_pos[channel] % (self.freq[channel] + 1)):
-                nextPoly5 = self.poly5(self.waveForm[channel], self.poly5State[channel], self.poly4State[channel])
+            channel_state.freq_phase += 1
+            if channel_state.freq_phase >= (channel_state.audio_freq + 1):
+                channel_state.freq_phase = 0
+                next_poly5 = self.poly5(
+                    channel_state.audio_ctrl,
+                    channel_state.poly5_state,
+                    channel_state.poly4_state,
+                )
 
-                if self.poly5clk(self.waveForm[channel], self.poly5State[channel]):
-                    self.poly4State[channel] = self.poly4(self.waveForm[channel], self.poly5State[channel], self.poly4State[channel])
+                if self.poly5clk(channel_state.audio_ctrl, channel_state.poly5_state):
+                    channel_state.poly4_state = self.poly4(
+                        channel_state.audio_ctrl,
+                        channel_state.poly5_state,
+                        channel_state.poly4_state,
+                    )
 
-                self.poly5State[channel] = nextPoly5
-    
-            if self.poly4State[channel] & 1:
-                stream[i] = (self.volume[channel] & 0xF) * 0x7 & 0xFF
-    
-            self._freq_pos[channel] += 1
+                channel_state.poly5_state = next_poly5
+
+            if channel_state.poly4_state & 1:
+                stream[i] = (channel_state.audio_vol & 0xF) * 0x7 & 0xFF
 
         return stream
 
@@ -106,32 +137,32 @@ class TIA_Sound(object):
 
     def write_audio_ctrl_0(self, data):
         self.pre_write_generate_sound()
-        self.waveForm[0] = data & 0xFF
+        self._channels[0].audio_ctrl = data & 0xFF
         self.post_write_generate_sound()
 
     def write_audio_ctrl_1(self, data):
         self.pre_write_generate_sound()
-        self.waveForm[1] = data & 0xFF
+        self._channels[1].audio_ctrl = data & 0xFF
         self.post_write_generate_sound()
 
     def write_audio_freq_0(self, data):
         self.pre_write_generate_sound()
-        self.freq[0]     = data & self.FREQ_DATA_MASK
+        self._channels[0].audio_freq = data & self.FREQ_DATA_MASK
         self.post_write_generate_sound()
 
     def write_audio_freq_1(self, data):
         self.pre_write_generate_sound()
-        self.freq[1]     = data & self.FREQ_DATA_MASK
+        self._channels[1].audio_freq = data & self.FREQ_DATA_MASK
         self.post_write_generate_sound()
 
     def write_audio_vol_0(self, data):
         self.pre_write_generate_sound()
-        self.volume[0]   = data
+        self._channels[0].audio_vol = data
         self.post_write_generate_sound()
 
     def write_audio_vol_1(self, data):
         self.pre_write_generate_sound()
-        self.volume[1]   = data
+        self._channels[1].audio_vol = data
         self.post_write_generate_sound()
 
     def step(self):
@@ -145,6 +176,13 @@ class TIA_Sound(object):
 
     def handle_events(self, event):
         pass
+
+    def samples_from_ticks(self, ticks):
+        """Convert CPU clocks into audio samples using fixed-point math."""
+        self._sample_remainder += ticks * self.SAMPLERATE
+        sample_count = self._sample_remainder // self.CPU_CLOCK_RATE
+        self._sample_remainder = self._sample_remainder % self.CPU_CLOCK_RATE
+        return int(sample_count)
 
 class Stretch(object):
     def __init__(self):
@@ -172,4 +210,3 @@ class Stretch(object):
             source_pos += increment
 
         return stretched_result
-
