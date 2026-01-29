@@ -45,16 +45,18 @@ class PygameStretchTIA_Sound(tiasound.TIA_Sound):
         """
         audio_ticks = self.clocks.system_clock - self._last_update_time
         self._last_update_time = self.clocks.system_clock
+        sample_count = self.samples_from_ticks(audio_ticks)
 
         for channel_num in range(self.CHANNELS):
 
             if self._maintain_pitch:
                 # Generate the 'raw' channel output
-                raw_audio = self.get_channel_data(channel_num, (self._stretcher.divisor*self.SAMPLERATE*audio_ticks/(self.CPU_CLOCK_RATE*self._stretcher.rate)))
+                stretched_count = (self._stretcher.divisor * sample_count) // self._stretcher.rate
+                raw_audio = self.get_channel_data(channel_num, stretched_count)
                 self._stretched[channel_num] += raw_audio
             else:
                 # Generate the 'raw' channel output
-                raw_audio = self.get_channel_data(channel_num, (self.SAMPLERATE*audio_ticks/self.CPU_CLOCK_RATE))
+                raw_audio = self.get_channel_data(channel_num, sample_count)
                 # Stretch/scale sound to compensate for real/emulated speed difference
                 self._stretched[channel_num] += self._stretcher.stretch(raw_audio)
 
@@ -64,7 +66,7 @@ class PygameStretchTIA_Sound(tiasound.TIA_Sound):
         #self.play_channel_buffers()
 
     def step(self):
-        #self.pre_write_generate_sound()
+        self.pre_write_generate_sound()
         self.play_channel_buffers()
 
     def play_channel_buffers(self):
