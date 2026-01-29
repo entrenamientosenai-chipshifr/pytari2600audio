@@ -66,7 +66,7 @@ class PygameStretchTIA_Sound(tiasound.TIA_Sound):
         #self.play_channel_buffers()
 
     def step(self):
-        #self.pre_write_generate_sound()
+        self.pre_write_generate_sound()
         self.play_channel_buffers()
 
     def play_channel_buffers(self):
