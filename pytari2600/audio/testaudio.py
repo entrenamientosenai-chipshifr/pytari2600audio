@@ -28,8 +28,9 @@ class WAV_TIA_Sound(tiasound.TIA_Sound):
         """ Update the 'emulated' audio wave form, based on current time.
         """
         audio_ticks = self.clocks.system_clock - self._last_update_time
-        self._raw_audio[0].extend(self.get_channel_data(0, (self.SAMPLERATE*audio_ticks/self.CPU_CLOCK_RATE)))
-        self._raw_audio[1].extend(self.get_channel_data(1, (self.SAMPLERATE*audio_ticks/self.CPU_CLOCK_RATE)))
+        sample_count = self.samples_from_ticks(audio_ticks)
+        self._raw_audio[0].extend(self.get_channel_data(0, sample_count))
+        self._raw_audio[1].extend(self.get_channel_data(1, sample_count))
         self._last_update_time = self.clocks.system_clock
 
         values = [val for pair in zip(self._raw_audio[0],self._raw_audio[1]) for val in pair]
@@ -54,8 +55,9 @@ class OSS_TIA_Sound(tiasound.TIA_Sound):
         """ Update the 'emulated' audio wave form, based on current time.
         """
         audio_ticks = self.clocks.system_clock - self._last_update_time
-        self._raw_audio[0].extend(self.get_channel_data(0,  (self.SAMPLERATE*audio_ticks/self.CPU_CLOCK_RATE)))
-        self._raw_audio[1].extend(self.get_channel_data(1,  (self.SAMPLERATE*audio_ticks/self.CPU_CLOCK_RATE)))
+        sample_count = self.samples_from_ticks(audio_ticks)
+        self._raw_audio[0].extend(self.get_channel_data(0, sample_count))
+        self._raw_audio[1].extend(self.get_channel_data(1, sample_count))
         self._last_update_time = self.clocks.system_clock
 
         values = [val for pair in zip(self._raw_audio[0],self._raw_audio[1]) for val in pair]
@@ -86,8 +88,9 @@ class OSS_StretchTIA_Sound(tiasound.TIA_Sound):
 
         audio_ticks = self.clocks.system_clock - self._last_update_time
         self._last_update_time = self.clocks.system_clock
+        sample_count = self.samples_from_ticks(audio_ticks)
         for channel_num in range(2):
-            raw_audio = self.get_channel_data(channel_num,  (self.SAMPLERATE*audio_ticks/self.CPU_CLOCK_RATE))
+            raw_audio = self.get_channel_data(channel_num, sample_count)
             self._stretched[channel_num] += self._stretchers[channel_num].stretch(raw_audio)
 
         values = [val for pair in zip(self._stretched[0],self._stretched[1]) for val in pair]
@@ -129,9 +132,13 @@ class SamplesTIA_Sound(tiasound.TIA_Sound):
 
     def pre_write_generate_sound(self):
         for channel_num in range(0,2):
-            channel_data = [x * (self.volume[channel_num] & 0xF) * 0xF & 0xFF for x in self.sample_waveform[self.waveForm[channel_num] & 0xF]] 
+            channel_state = self._channels[channel_num]
+            channel_data = [
+                x * (channel_state.audio_vol & 0xF) * 0xF & 0xFF
+                for x in self.sample_waveform[channel_state.audio_ctrl & 0xF]
+            ]
             # Multiply each data entry based on frequency.
-            freq_channel_data      = [[x] * (self.freq[channel_num]+ 1) for x in channel_data]
+            freq_channel_data      = [[x] * (channel_state.audio_freq + 1) for x in channel_data]
             # Flatten the list
             flat_freq_channel_data = [x for sublist in freq_channel_data for x in sublist]
 
@@ -141,4 +148,3 @@ class SamplesTIA_Sound(tiasound.TIA_Sound):
 
                 channel = pygame.mixer.Channel(channel_num)
                 channel.play(sound, loops=-1)
-
